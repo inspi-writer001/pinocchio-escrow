@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
 
-    use std::path::PathBuf;
+    use std::{io::Error, path::PathBuf};
 
     use litesvm::LiteSVM;
     use litesvm_token::{
@@ -21,6 +21,8 @@ mod tests {
     use solana_transaction::Transaction;
     use spl_associated_token_account::solana_program::program_pack::Pack;
 
+    use crate::instructions::MakeData;
+
     const PROGRAM_ID: Pubkey = Pubkey::new_from_array(crate::ID); //"CntDHuHyUa1sEyLEYoHbrYdzM2G4VeDHSdQjQXXdRh6E";
     const TOKEN_PROGRAM_ID: Pubkey = spl_token::ID;
     const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
@@ -29,7 +31,7 @@ mod tests {
         PROGRAM_ID
     }
 
-    fn setup() -> (LiteSVM, Keypair) {
+    fn setup() -> (LiteSVM, ReusableState) {
         let mut svm = LiteSVM::new();
         let payer = Keypair::new();
 
@@ -48,19 +50,7 @@ mod tests {
         // msg!("The path is!! {:?}", so_path);
 
         // let program_data = std::fs::read(so_path).expect("Failed to read program SO file");
-
         svm.add_program(program_id(), bytes);
-
-        (svm, payer)
-    }
-
-    #[test]
-    pub fn test_make_instruction() {
-        let (mut svm, payer) = setup();
-
-        let program_id = program_id();
-
-        assert_eq!(program_id, PROGRAM_ID);
 
         let mint_a = CreateMint::new(&mut svm, &payer)
             .decimals(6)
@@ -83,6 +73,11 @@ mod tests {
             .unwrap();
         msg!("Maker ATA A: {}\n", maker_ata_a);
 
+        let maker_ata_b = CreateAssociatedTokenAccount::new(&mut svm, &payer, &mint_b)
+            .owner(&payer.pubkey())
+            .send()
+            .unwrap();
+
         // Derive the PDA for the escrow account using the maker's public key and a seed value
         let escrow = Pubkey::find_program_address(
             &[b"escrow".as_ref(), payer.pubkey().as_ref()],
@@ -102,27 +97,67 @@ mod tests {
         let token_program = TOKEN_PROGRAM_ID;
         let system_program = solana_sdk_ids::system_program::ID;
 
-        // Mint 1,000 tokens (with 6 decimal places) of Mint A to the maker's associated token account
-        MintTo::new(&mut svm, &payer, &mint_a, &maker_ata_a, 1000000000)
+        let reusable_state = ReusableState {
+            mint_a,
+            mint_b,
+            ata_program: asspciated_token_program,
+            token_program,
+            system_program,
+            vault,
+            maker: payer,
+            maker_ata_a,
+            maker_ata_b,
+            escrow: escrow,
+        };
+        (svm, reusable_state)
+    }
+
+    pub struct ReusableState {
+        pub mint_a: Pubkey,
+        pub mint_b: Pubkey,
+        pub maker_ata_a: Pubkey,
+        pub maker_ata_b: Pubkey,
+        pub vault: Pubkey,
+        pub ata_program: Pubkey,
+        pub token_program: Pubkey,
+        pub system_program: Pubkey,
+        pub escrow: (Pubkey, u8),
+        pub maker: Keypair,
+    }
+
+    pub fn make(svm: &mut LiteSVM, state: &ReusableState) -> Result<(), Error> {
+        let mint_a = state.mint_a;
+        let payer = &state.maker;
+        let maker_ata_a = state.maker_ata_a;
+        let mint_b = state.mint_b;
+        let vault = state.vault;
+        let system_program = state.system_program;
+        let token_program = state.token_program;
+        let ata_program = state.ata_program;
+        let escrow = state.escrow;
+
+        MintTo::new(svm, &payer, &mint_a, &maker_ata_a, 1_000_000_000)
             .send()
             .unwrap();
 
-        let amount_to_receive: u64 = 100000000; // 100 tokens with 6 decimal places
-        let amount_to_give: u64 = 400000000; // 500 tokens with 6 decimal places
-        let bump: u8 = escrow.1;
+        let amount_to_receive: u64 = 100_000_000; // 100 tokens with 6 decimal places
+        let amount_to_give: u64 = 400_000_000; // 500 tokens with 6 decimal places
 
-        msg!("Bump: {}", bump);
+        let make_data_ix: MakeData = MakeData {
+            make_amount: amount_to_give,
+            take_amount: amount_to_receive,
+        };
 
-        // Create the "Make" instruction to deposit tokens into the escrow
+        let make_data_ser = make_data_ix.to_bytes();
+
         let make_data = [
             vec![0u8], // Discriminator for "Make" instruction
-            bump.to_le_bytes().to_vec(),
-            amount_to_receive.to_le_bytes().to_vec(),
-            amount_to_give.to_le_bytes().to_vec(),
+            make_data_ser,
         ]
         .concat();
+
         let make_ix = Instruction {
-            program_id: program_id,
+            program_id: program_id(),
             accounts: vec![
                 AccountMeta::new(payer.pubkey(), true),
                 AccountMeta::new(mint_a, false),
@@ -132,13 +167,12 @@ mod tests {
                 AccountMeta::new(vault, false),
                 AccountMeta::new(system_program, false),
                 AccountMeta::new(token_program, false),
-                AccountMeta::new(asspciated_token_program, false),
+                AccountMeta::new(ata_program, false),
                 AccountMeta::new(Rent::id(), false),
             ],
             data: make_data,
         };
 
-        // Create and send the transaction containing the "Make" instruction
         let message = Message::new(&[make_ix], Some(&payer.pubkey()));
         let recent_blockhash = svm.latest_blockhash();
 
@@ -146,12 +180,23 @@ mod tests {
 
         // Send the transaction and capture the result
         let tx = svm.send_transaction(transaction).unwrap();
-
-        // Log transaction details
         msg!("tx logs: {:#?}", tx.logs);
         msg!("\n\nMake transaction sucessfull");
         msg!("CUs Consumed: {}", tx.compute_units_consumed);
-        let maker_ata_from_program = svm.get_account(&maker_ata_a).unwrap();
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn test_make_instruction() {
+        let (mut svm, state) = setup();
+
+        let program_id = program_id();
+
+        assert_eq!(program_id, PROGRAM_ID);
+        make(&mut svm, &state).unwrap();
+
+        let maker_ata_from_program = svm.get_account(&state.maker_ata_a).unwrap();
 
         let maker_deserialized_ata =
             spl_token::state::Account::unpack(maker_ata_from_program.data.as_slice()).unwrap();

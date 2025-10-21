@@ -24,8 +24,8 @@ use crate::state::Escrow;
 #[repr(C)]
 #[derive(Pod, Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct MakeData {
-    pub make_amount: u64,
     pub take_amount: u64,
+    pub make_amount: u64,
     // pub _padding: [u8; 7],
 }
 
@@ -37,6 +37,11 @@ impl DataLen for MakeData {
     const LEN: usize = core::mem::size_of::<MakeData>();
 }
 
+impl MakeData {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bytemuck::bytes_of(self).to_vec()
+    }
+}
 // pub struct InitializeMyStateV2IxData {
 //     pub owner: Pubkey,
 //     pub data: [u8; 32],
@@ -46,18 +51,30 @@ pub fn process_make_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
     pinocchio_log::log!("Processing Make instruction");
     pinocchio_log::log!("Processing Make Ix again --");
 
-    // let ix_data = bytemuck::from_bytes::<MakeData>(data);
+    // Debug: Check data length
+    pinocchio_log::log!("Data length: {}", data.len());
 
+    // Debug: Print first few bytes
+    if data.len() > 0 {
+        pinocchio_log::log!("First bytes: {}", &data[..data.len().min(20)]);
+    }
+
+    // Check if we have exactly 16 bytes (2 u64s)
+    if data.len() != 16 {
+        pinocchio_log::log!("Expected 16 bytes, got {}", data.len());
+        return Err(pinocchio::program_error::ProgramError::InvalidInstructionData);
+    }
+
+    let ix_data = bytemuck::try_pod_read_unaligned::<MakeData>(data)
+        .map_err(|_| pinocchio::program_error::ProgramError::InvalidInstructionData)?;
+
+    pinocchio_log::log!("Successfully parsed instruction data");
     pinocchio_log::log!("did not fail at reading data with bytemuck");
     let [maker, mint_a, mint_b, escrow_account, maker_ata, escrow_ata, system_program, token_program, _associated_token_program, _rent_sysvar @ ..] =
         accounts
     else {
         return Err(pinocchio::program_error::ProgramError::NotEnoughAccountKeys);
     };
-
-    let maker_ata_fot_tf = maker_ata.clone();
-    let escrow_ata_for_tf = escrow_ata.clone();
-    let maker_for_tf = maker.clone();
 
     pinocchio_log::log!("did not fail at accounts check --");
 
@@ -89,8 +106,11 @@ pub fn process_make_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
 
     pinocchio_log::log!("did not fail at accounts assertion 👍️ --");
 
-    let amount_to_receive = unsafe { *(data.as_ptr().add(1) as *const u64) };
-    let amount_to_give = unsafe { *(data.as_ptr().add(9) as *const u64) };
+    // let amount_to_receive = unsafe { *(data.as_ptr().add(1) as *const u64) };
+    // let amount_to_give = unsafe { *(data.as_ptr().add(9) as *const u64) };
+
+    let amount_to_receive = ix_data.take_amount;
+    let amount_to_give = ix_data.make_amount;
 
     let bump = [bump.to_le()];
     let seed = [
@@ -119,7 +139,7 @@ pub fn process_make_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
             escrow_state.set_mint_b(mint_b.key());
             escrow_state.set_amount_to_receive(amount_to_receive);
             escrow_state.set_amount_to_give(amount_to_give);
-            escrow_state.bump = data[0];
+            escrow_state.bump = bump[0];
         }
     } else {
         return Err(pinocchio::program_error::ProgramError::IllegalOwner);
@@ -150,8 +170,11 @@ pub fn do_transfer(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     };
 
     msg!("Trying transfer now 👑👑--");
-    let _amount_to_receive = unsafe { *(data.as_ptr().add(1) as *const u64) };
-    let amount_to_give = unsafe { *(data.as_ptr().add(9) as *const u64) };
+    let ix_data = bytemuck::try_pod_read_unaligned::<MakeData>(data)
+        .map_err(|_| pinocchio::program_error::ProgramError::InvalidInstructionData)?;
+
+    // let amount_to_receive = ix_data.take_amount;
+    let amount_to_give = ix_data.make_amount;
 
     pinocchio_log::log!("Amount to give {} ", amount_to_give);
 
