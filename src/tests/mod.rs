@@ -151,7 +151,7 @@ mod tests {
         let make_data_ser = make_data_ix.to_bytes();
 
         let make_data = [
-            vec![0u8], // Discriminator for "Make" instruction
+            vec![crate::instructions::EscrowInstrctions::Make as u8], // Discriminator for "Make" instruction
             make_data_ser,
         ]
         .concat();
@@ -187,6 +187,76 @@ mod tests {
         Ok(())
     }
 
+    pub fn take(svm: &mut LiteSVM, state: &ReusableState) -> Result<(Pubkey, Pubkey), Error> {
+        let mint_a = state.mint_a;
+        let maker = &state.maker;
+        let maker_ata_a = state.maker_ata_a;
+        let maker_ata_b = state.maker_ata_b;
+        let mint_b = state.mint_b;
+        let vault = state.vault;
+        let system_program = state.system_program;
+        let token_program = state.token_program;
+        let ata_program = state.ata_program;
+        let escrow = state.escrow;
+
+        let taker = Keypair::new();
+        svm.airdrop(&taker.pubkey(), 10 * LAMPORTS_PER_SOL)
+            .expect("Airdrop failed");
+
+        let taker_ata_a = CreateAssociatedTokenAccount::new(svm, &taker, &mint_a)
+            .owner(&taker.pubkey())
+            .send()
+            .unwrap();
+        let taker_ata_b = CreateAssociatedTokenAccount::new(svm, &taker, &mint_b)
+            .owner(&taker.pubkey())
+            .send()
+            .unwrap();
+        msg!("Taker ATA A: {}\nTaker ATA B {}", taker_ata_a, taker_ata_b);
+
+        MintTo::new(svm, &maker, &mint_b, &taker_ata_b, 1_000_000_000)
+            .send()
+            .unwrap();
+
+        let take_data = [
+            vec![crate::instructions::EscrowInstrctions::Take as u8], // Discriminator for "Take" instruction
+        ]
+        .concat();
+
+        let take_ix = Instruction {
+            program_id: program_id(),
+            accounts: vec![
+                AccountMeta::new(taker.pubkey(), true),
+                AccountMeta::new(maker.pubkey(), false),
+                AccountMeta::new(maker_ata_a, false),
+                AccountMeta::new(maker_ata_b, false),
+                AccountMeta::new(mint_a, false),
+                AccountMeta::new(mint_b, false),
+                AccountMeta::new(escrow.0, false),
+                AccountMeta::new(taker_ata_a, false),
+                AccountMeta::new(taker_ata_b, false),
+                AccountMeta::new(vault, false),
+                AccountMeta::new(system_program, false),
+                AccountMeta::new(token_program, false),
+                AccountMeta::new(ata_program, false),
+                AccountMeta::new(Rent::id(), false),
+            ],
+            data: take_data,
+        };
+
+        let message = Message::new(&[take_ix], Some(&taker.pubkey()));
+        let recent_blockhash = svm.latest_blockhash();
+
+        let transaction = Transaction::new(&[&taker], message, recent_blockhash);
+
+        // Send the transaction and capture the result
+        let tx = svm.send_transaction(transaction).unwrap();
+        msg!("tx logs: {:#?}", tx.logs);
+        msg!("\n\nMake transaction sucessfull");
+        msg!("CUs Consumed: {}", tx.compute_units_consumed);
+
+        Ok((taker_ata_a, taker_ata_b))
+    }
+
     #[test]
     pub fn test_make_instruction() {
         let (mut svm, state) = setup();
@@ -201,5 +271,33 @@ mod tests {
         let maker_deserialized_ata =
             spl_token::state::Account::unpack(maker_ata_from_program.data.as_slice()).unwrap();
         msg!("new user token_balance: {}", maker_deserialized_ata.amount);
+    }
+
+    #[test]
+    pub fn test_take_instruction() {
+        let (mut svm, state) = setup();
+
+        let program_id = program_id();
+
+        assert_eq!(program_id, PROGRAM_ID);
+        make(&mut svm, &state).unwrap();
+        let (taker_ata_a, taker_ata_b) = take(&mut svm, &state).unwrap();
+
+        let taker_ata_a_from_program = svm.get_account(&taker_ata_a).unwrap();
+
+        let taker_deserialized_ata_a =
+            spl_token::state::Account::unpack(taker_ata_a_from_program.data.as_slice()).unwrap();
+        msg!(
+            "new user token_balance: {}",
+            taker_deserialized_ata_a.amount
+        );
+        let taker_ata_b_from_program = svm.get_account(&taker_ata_b).unwrap();
+
+        let taker_deserialized_ata_b =
+            spl_token::state::Account::unpack(taker_ata_b_from_program.data.as_slice()).unwrap();
+        msg!(
+            "new user token_balance: {}",
+            taker_deserialized_ata_b.amount
+        );
     }
 }

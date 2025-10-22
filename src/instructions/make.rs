@@ -112,13 +112,15 @@ pub fn process_make_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
     let amount_to_receive = ix_data.take_amount;
     let amount_to_give = ix_data.make_amount;
 
-    let bump = [bump.to_le()];
+    let initial_bump = bump.to_le();
+    let bump = [initial_bump];
     let seed = [
         Seed::from(b"escrow"),
         Seed::from(maker.key()),
         Seed::from(&bump),
     ];
     let seeds = Signer::from(&seed);
+    pinocchio_log::log!("this is the escrow bump: {}", &bump);
 
     if escrow_account.owner() != &crate::ID {
         CreateAccount {
@@ -131,31 +133,28 @@ pub fn process_make_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
         .invoke_signed(&[seeds.clone()])?;
         msg!("did not fail at first invoke --");
 
-        {
-            let escrow_state = Escrow::from_account_info(escrow_account)?;
+        let escrow_state = Escrow::from_account_info(escrow_account)?;
 
-            escrow_state.set_maker(maker.key());
-            escrow_state.set_mint_a(mint_a.key());
-            escrow_state.set_mint_b(mint_b.key());
-            escrow_state.set_amount_to_receive(amount_to_receive);
-            escrow_state.set_amount_to_give(amount_to_give);
-            escrow_state.bump = bump[0];
-        }
+        escrow_state.set_maker(maker.key());
+        escrow_state.set_mint_a(mint_a.key());
+        escrow_state.set_mint_b(mint_b.key());
+        escrow_state.set_amount_to_receive(amount_to_receive);
+        escrow_state.set_amount_to_give(amount_to_give);
+        escrow_state.set_bump(initial_bump);
     } else {
         return Err(pinocchio::program_error::ProgramError::IllegalOwner);
     }
 
-    {
-        pinocchio_associated_token_account::instructions::Create {
-            funding_account: maker,
-            account: escrow_ata,
-            wallet: escrow_account,
-            mint: mint_a,
-            token_program: token_program,
-            system_program: system_program,
-        }
-        .invoke()?;
+    pinocchio_associated_token_account::instructions::Create {
+        funding_account: maker,
+        account: escrow_ata,
+        wallet: escrow_account,
+        mint: mint_a,
+        token_program: token_program,
+        system_program: system_program,
     }
+    .invoke()?;
+
     msg!("did not fail at create account invoke 🔥🔥--");
 
     Ok(())

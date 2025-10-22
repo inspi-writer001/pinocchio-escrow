@@ -26,6 +26,11 @@ pub fn process_instruction(
             instructions::process_make_instruction(accounts, data)?;
             instructions::do_transfer(accounts, data)?;
         }
+        EscrowInstrctions::Take => {
+            instructions::process_take_instruction(accounts, data)?;
+            instructions::transfer_to_maker(accounts)?;
+            instructions::transfer_to_taker(accounts)?
+        }
         // EscrowInstrctions::MakeV2 => instructions::process_make_instruction_v2(accounts, data)?,
         _ => return Err(pinocchio::program_error::ProgramError::InvalidInstructionData),
     }

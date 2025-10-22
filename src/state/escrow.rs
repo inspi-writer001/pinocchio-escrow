@@ -12,7 +12,7 @@ pub struct Escrow {
 }
 
 impl Escrow {
-    pub const LEN: usize = 32 + 32 + 32 + 8 + 8;
+    pub const LEN: usize = 32 + 32 + 32 + 8 + 8 + 1;
 
     pub fn from_account_info(account_info: &AccountInfo) -> Result<&mut Self, ProgramError> {
         let mut data = account_info.try_borrow_mut_data()?;
@@ -25,7 +25,7 @@ impl Escrow {
         }
 
         // let mut escrow = Escrow::default();
-        
+
         // escrow.maker.copy_from_slice(&data[0..32]);
         // escrow.mint_a.copy_from_slice(&data[32..64]);
         // escrow.mint_b.copy_from_slice(&data[64..96]);
@@ -56,6 +56,10 @@ impl Escrow {
 
     pub fn set_mint_b(&mut self, mint_b: &pinocchio::pubkey::Pubkey) {
         self.mint_b.copy_from_slice(mint_b.as_ref());
+    }
+    pub fn set_bump(&mut self, bump: u8) {
+        pinocchio_log::log!("bump received: {}", bump);
+        self.bump = bump;
     }
 
     pub fn amount_to_receive(&self) -> u64 {
